@@ -49,6 +49,8 @@ uint8_t LED_PIN = 5;
 bool LED_STATE = true;
 #endif
 
+bool AP_ENABLED = false;
+
 namespace OTA
 {
 	WiFiServer TelnetServer(8266);
@@ -59,9 +61,6 @@ namespace OTA
 
 		// Hostname defaults to esp8266-[ChipID]
 		// ArduinoOTA.setHostname("myesp8266");
-		char hostname[17];
-		sprintf(hostname, "esp12e_AP-%06x", ESP.getChipId());
-		ArduinoOTA.setHostname(hostname);
 
 		// No authentication by default
 		// ArduinoOTA.setPassword((const char *)"123");
@@ -104,6 +103,81 @@ namespace esp12e
 	int8_t num_wifi_networks = 0;
 	String _ssid[5];
 
+	void scan_wifi()
+	{
+		WiFi.mode(WIFI_STA);
+		WiFi.disconnect();
+		delay(100);
+
+		// WiFi.scanNetworks will return the number of networks found
+		num_wifi_networks = WiFi.scanNetworks();
+		Serial.print("scan complete : ");
+		if (num_wifi_networks == 0)
+		{
+			Serial.println("no networks found");
+		}
+		else
+		{
+			Serial.print(num_wifi_networks);
+			Serial.println(" networks found");
+			for (int i = 0; i < num_wifi_networks; ++i)
+			{
+				_ssid[i] = WiFi.SSID(i);
+
+				// Print SSID and RSSI for each network found
+				Serial.print(i + 1);
+				Serial.print(": ");
+				Serial.print(WiFi.SSID(i));
+				Serial.print(" (");
+				Serial.print(WiFi.RSSI(i));
+				Serial.print(")");
+				Serial.println((WiFi.encryptionType(i) == ENC_TYPE_NONE) ? " " : "*");
+				delay(10);
+			}
+		}
+		Serial.println("");
+	}
+
+	void static_connection()
+	{
+		WiFi.mode(WIFI_STA);
+
+		for (uint8_t i = 0; i < NETWORK_NODES; ++i)
+		{
+			WiFi.begin(ssid[i], password[i]);
+			Serial.print(ssid[i]);
+			Serial.print(" : ");
+
+			if (WiFi.waitForConnectResult() == WL_CONNECTED)
+			{
+				Serial.println("Success");
+				connected = true;
+				break;
+			}
+			else
+			{
+				Serial.println("Failed");
+			}
+		}
+
+		if (connected == false)
+		{
+			Serial.println("All networks attempted\nRebooting in 5s");
+			delay(5000);
+			ESP.restart();
+		}
+
+		Serial.println("Ready");
+		Serial.print("IP address: ");
+		Serial.println(WiFi.localIP());
+	}
+
+	void connect()
+	{
+		esp12e::scan_wifi();
+		esp12e::static_connection();
+	}
+
 	void handleRoot()
 	{
 		esp12e::server.send(200, "text/html", "<h1>You are connected</h1>");
@@ -123,6 +197,7 @@ namespace esp12e
 
 	void start_AP()
 	{
+		AP_ENABLED = true;
 		esp12e::server.begin();
 		Serial.println("HTTP server started");
 	}
@@ -144,9 +219,18 @@ void setup()
 	Serial.begin(115200);
 	Serial.println("Booting");
 
-	// Start the Access Point
-	esp12e::setup_AP();
-	esp12e::start_AP();
+	pinMode(5, INPUT); // GPIO5 - all GPIO pins are default HIGH
+	
+	// Either start up as an Access Point, or connect to an existing network
+	if (digitalRead(5) == HIGH)
+	{
+		esp12e::connect();
+	}
+	else
+	{
+		esp12e::setup_AP();
+		esp12e::start_AP();
+	}
 
 	// Setup Arduino OTA
 	OTA::setup();
@@ -157,7 +241,10 @@ void loop()
 {
 	OTA::step();
 
-	esp12e::step_AP();
+	if (AP_ENABLED)
+	{
+		esp12e::step_AP();
+	}
 
 #ifdef BLINKY
 	if (millis() - t0 > 1000)
